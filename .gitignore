@@ -1,0 +1,17 @@
+*target
+*.settings
+*.classpath
+*.project
+*.prefs
+*.class
+*.iml
+*.ipr
+*.iws
+*.mvn
+*.idea
+*.svn
+*.vagrant
+.DS_Store
+*.log
+*.gitlab-ci.yml
+*/out/*
