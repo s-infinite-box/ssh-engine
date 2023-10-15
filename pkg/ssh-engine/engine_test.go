@@ -13,6 +13,10 @@ func TestInitCluster(t *testing.T) {
 	}
 }
 
+func Test1(t *testing.T) {
+	n := &Node{}
+	t.Log(n)
+}
 func Test2(t *testing.T) {
 	ch := make(chan string, 1)
 	arr := []string{"a", "b", "c"}

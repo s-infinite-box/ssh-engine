@@ -20,7 +20,7 @@ func Control(configPath string) error {
 	}
 
 	//  finally close ssh dialer
-	defer func(e *ShellCmdsEngineTemp) {
+	defer func(e *Engine) {
 		for _, node := range e.Nodes {
 			err := node.Dialer.Close()
 			if err != nil {
@@ -48,23 +48,32 @@ const (
 	LogFilePath = "log"
 )
 
-type ShellCmdsEngineTemp struct {
+var (
+	LogScopes = []string{"ALL", "ONE", "NODE", "TEMP"}
+)
+
+type Engine struct {
 	//  wait for all asynchronous task done
 	WG sync.WaitGroup `json:"-"`
 	//	k tempName v-k hostIp v-v chan
 	TaskChan           map[string]map[string]chan string `json:"-"`
 	TaskConditionNum   map[string]int                    `json:"-"`
-	CustomConfigParams map[string]string                 `json:"CustomConfigParams"`
-	LogFilePath        string                            `json:"LogFilePath"`
-	LogLevel           string                            `json:"LogLevel"`
-	Nodes              []*Node                           `json:"Nodes"`
+	LogFileAttr        int                               `json:"-"`
+	TotalLogFileWriter io.Writer                         `json:"-"`
+	LogWriteLock       sync.Mutex                        `json:"-"`
+
+	CustomConfigParams map[string]string `json:"CustomConfigParams"`
+	LogFilePath        string            `json:"LogFilePath"`
+	LogScope           string            `json:"LogScope"`
+
+	Nodes []*Node `json:"Nodes"`
 	//	shell-command
 	ShellCommandTempConfig []*ShellCommandTemp `json:"ShellCommandTempConfig"`
 }
 
-// BuildEngineTemp build ShellCmdsEngineTemp by yaml file
+// BuildEngineTemp build Engine by yaml file
 // the method only processing config, not
-func BuildEngineTemp(configPath string) (*ShellCmdsEngineTemp, error) {
+func BuildEngineTemp(configPath string) (*Engine, error) {
 	RealConfigPath := configPath
 	if RealConfigPath == "" {
 		RealConfigPath = os.Getenv("Engine_CONFIG_PATH")
@@ -79,21 +88,53 @@ func BuildEngineTemp(configPath string) (*ShellCmdsEngineTemp, error) {
 	}
 	//	decode yaml file
 	s := yaml.NewYAMLOrJSONDecoder(bytes.NewReader(file), 100)
-	var engineTemp ShellCmdsEngineTemp
+	var engineTemp Engine
 	err = s.Decode(&engineTemp)
 	if err != nil {
 		return nil, err
 	}
 	//	init task chan
 	engineTemp.TaskChan = make(map[string]map[string]chan string)
-	realLogFilePath := engineTemp.LogFilePath
-	if realLogFilePath == "" {
-		realLogFilePath = LogFilePath
+
+	//	init log file path
+	if engineTemp.LogFilePath == "" {
+		engineTemp.LogFilePath = LogFilePath
 	}
+
+	//	init log scope
+	check := true
+	if engineTemp.LogScope != "" {
+		engineTemp.LogScope = strings.ToUpper(engineTemp.LogScope)
+		for _, l := range LogScopes {
+			if engineTemp.LogScope == l {
+				check = false
+				break
+			}
+		}
+	}
+	if check {
+		engineTemp.LogScope = "ALL"
+	}
+
+	//	init log file attr
+	engineTemp.LogFileAttr = os.O_CREATE | os.O_TRUNC | os.O_RDWR
+
+	//	create log file path
+	err = os.Mkdir(engineTemp.LogFilePath, os.ModePerm)
+	if err != nil && !os.IsExist(err) {
+		klog.Errorf("mkdir logPath %s failed, error: %v", engineTemp.LogFilePath, err)
+		return nil, err
+	}
+	//	total log
+	if engineTemp.LogScope == "ALL" || engineTemp.LogScope == "ONE" {
+		engineTemp.TotalLogFileWriter, err = os.OpenFile(engineTemp.LogFilePath+"/total.log", engineTemp.LogFileAttr, os.ModePerm)
+		if err != nil {
+			klog.Error(err)
+			return nil, err
+		}
+	}
+
 	//	build ssh dialer and log file writer
-	os.Mkdir(realLogFilePath, os.ModePerm)
-	logFileAttr := os.O_CREATE | os.O_TRUNC | os.O_RDWR
-	tf, err := os.OpenFile(realLogFilePath+"/totle.log", logFileAttr, os.ModePerm)
 	for _, node := range engineTemp.Nodes {
 		//	create ssh dialer
 		dialer, err := NewSSHDialer(node.SSHUsername, node.SSHPassword, node.HostIp, node.SSHPort, true)
@@ -102,13 +143,27 @@ func BuildEngineTemp(configPath string) (*ShellCmdsEngineTemp, error) {
 			return nil, err
 		}
 		node.Dialer = dialer
-		os.Mkdir(realLogFilePath+"/"+node.HostIp, os.ModePerm)
-		f, err := os.OpenFile(realLogFilePath+"/"+node.HostIp+"/"+node.HostIp+".log", logFileAttr, os.ModePerm)
-		if err != nil {
-			klog.Error(err)
-			return nil, err
+
+		//	node log
+		node.TempLogFileWriter = make(map[string]io.Writer)
+		node.NodeLogFileWriter = engineTemp.TotalLogFileWriter
+		if engineTemp.LogScope == "ALL" || engineTemp.LogScope == "NODE" {
+			err = os.Mkdir(engineTemp.LogFilePath+"/"+node.HostIp, os.ModePerm)
+			if err != nil && !os.IsExist(err) {
+				klog.Error(err)
+				return nil, err
+			}
+			f, err := os.OpenFile(engineTemp.LogFilePath+"/"+node.HostIp+"/"+node.HostIp+".log", engineTemp.LogFileAttr, os.ModePerm)
+			if err != nil {
+				klog.Error(err)
+				return nil, err
+			}
+			if node.NodeLogFileWriter == nil {
+				node.NodeLogFileWriter = f
+			} else {
+				node.NodeLogFileWriter = io.MultiWriter(f, node.NodeLogFileWriter)
+			}
 		}
-		node.LogFileWriter = io.MultiWriter(os.Stdout, f, tf)
 	}
 	//
 	engineTemp.TaskConditionNum = make(map[string]int)
@@ -133,7 +188,7 @@ func BuildEngineTemp(configPath string) (*ShellCmdsEngineTemp, error) {
 	return &engineTemp, nil
 }
 
-func (engineTemp *ShellCmdsEngineTemp) ExecShellCmds() {
+func (engineTemp *Engine) ExecShellCmds() {
 	for _, sct := range engineTemp.ShellCommandTempConfig {
 		for _, condition := range sct.ConditionOn {
 			if task, ok := engineTemp.TaskChan[condition]; ok {
@@ -162,7 +217,7 @@ func (engineTemp *ShellCmdsEngineTemp) ExecShellCmds() {
 			klog.Errorf("Unsupported ProcessingType: %s", sct.ProcessingType)
 			panic("Unsupported ProcessingType")
 		}
-		klog.Infof("ProcessingType: %s, ProcessingNodeIps: %v, Async: %t ,Cmds: %v", sct.ProcessingType, sct.ProcessingNodeIps, sct.IsAsync, sct.Cmds)
+		klog.Infof("ProcessingType: %s, ProcessingNodeIps: %v, Async: %t ,Cmds: %v", sct.ProcessingType, sct.ProcessingNodeIps, sct.IsAsync, strings.Join(sct.Cmds, "\n"))
 		for _, node := range ProcessNode {
 			//	Async exec
 			if sct.IsAsync {
@@ -180,16 +235,16 @@ func (engineTemp *ShellCmdsEngineTemp) ExecShellCmds() {
 				continue
 			}
 			//	Sync exec
-			if _, err := sct.exec(node, engineTemp); err != nil {
+			if err := sct.exec(node, engineTemp); err != nil {
 				klog.Errorf("%v", err)
 			}
 		}
 	}
 }
 
-func (engineTemp *ShellCmdsEngineTemp) asyncExec(n *Node, s *ShellCommandTemp, chCap int) {
+func (engineTemp *Engine) asyncExec(n *Node, s *ShellCommandTemp, chCap int) {
 	defer engineTemp.WG.Done()
-	if _, err := s.exec(n, engineTemp); err != nil {
+	if err := s.exec(n, engineTemp); err != nil {
 		klog.Errorf("%v", err)
 	}
 	for i := 0; i < chCap; i++ {

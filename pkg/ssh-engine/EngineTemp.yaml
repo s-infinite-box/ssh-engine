@@ -1,3 +1,12 @@
+#   log file path
+#   example: log/node-hostIp/tempName.log
+LogFilePath: log
+#   support variable: TEMP, NODE, ONE, ALL(default), upper and lower case are supported
+#   TEMP: the log file will group according to the node and temp
+#   NODE: the log file will group according to the node
+#   ONE: the log file will be one file
+#   ALL: all of other
+LogScope: ONE
 CustomConfigParams:
   # 	admin host ip
   AdminHost: autodeploy.admin.internal
@@ -5,17 +14,20 @@ CustomConfigParams:
   PodCidr: 192.168.77.0/24
   Iface: eth2
   VlanNic: eth2
+  VLAN_ID: 0
   PodGateway: 192.168.77.1
   Dns: 114.114.114.114
   ComputationalClusterFirstMasterHostIp: 192.168.77.177
   kube-vip-iface: eth1
   kube-vip: 172.27.0.5
 
+# execution node
 Nodes:
   - HostIp: 172.26.0.2
     SSHUsername: root
     SSHPassword:
     SSHPort: 22
+    # node label
     Label:
       NodeNum: 0
       PrivateIp: 172.27.0.2/24
@@ -39,6 +51,7 @@ Nodes:
 
 #   the operator ${[]} will be replaced, it is first obtained from the environment variable, then from the Nodes.Label,
 #   again from the Nodes Attributes(HostIp, SSHUsername, SSHPassword, SSHPort...), and finally from the CustomConfigParams
+#   if the value is not found, panic will occur. code: pkg/ssh-engine/ssh.go:64
 ShellCommandTempConfig:
   - TempName: CommonProcess
     Description: set hostname, hosts
@@ -48,6 +61,10 @@ ShellCommandTempConfig:
     ProcessingType: AllNode
     cmds:
       - "hostnamectl set-hostname 'node-${[NodeNum]}'"
+      - "sed -i '1i ${[AdminHostIp]} ${[AdminHost]}' /etc/hosts"
+      - "sed -i '1i 172.26.0.2 node-0' /etc/hosts"
+      - "sed -i '1i 172.26.0.3 node-1' /etc/hosts"
+      - "sed -i '1i 172.26.0.4 node-2' /etc/hosts"
 
   - TempName: FirstRke2MasterNodeProcess
     Description: install rke2 on first master node
@@ -57,6 +74,9 @@ ShellCommandTempConfig:
     #   Take effect when ProcessingType is Manual
     #   the value should be an array of IP string
     ProcessingNodeIps: [ "172.26.0.2" ]
+    #   wait for temp CommonProcess to finish
+    ConditionOn:
+      - CommonProcess
     cmds:
       #  download rke2 required file
       - wget -q -P /root/rke2 --cut-dirs=3 -r -np -nH -R index.html ${[AdminHost]}:8000/computation_cluster/rke2/
@@ -89,3 +109,36 @@ ShellCommandTempConfig:
       - systemctl enable rke2-server.service && systemctl start rke2-server.service
       - while ! [[ -x /var/lib/rancher/rke2/bin/kubectl ]]; do date; sleep 1;done;cp /var/lib/rancher/rke2/bin/kubectl /usr/local/bin
       - rm -rf /root/rke2
+
+  - TempName: CniProcessAndInstallKubeModules
+    Description: install cni plug-in on first master node
+    TryCount: 1
+    IsAsync: true
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIps: [ "172.26.0.2" ]
+    cmds:
+      #  create kubernetes resource multus
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/cni/multus.yaml
+      #  create kubernetes resource kube-ovn
+      - >-
+        mkdir "/root/net" && cd /root/net && curl -sfL ${[AdminHost]}:8000/computation_cluster/cni/ovn-install.sh |
+        IFACE=${[Iface]}
+        VLAN_ID=${[VLAN_ID]}
+        POD_CIDR=${[PodCidr]}
+        POD_GATEWAY=${[PodGateway]}
+        VLAN_NIC=${[VlanNic]} bash -
+      # create default network
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/cni/multus-ovn-global.yaml
+      # create kubernetes resource kube-vip
+      - >-
+        cd /root/net && curl -sfL ${[AdminHost]}:8000/computation_cluster/cni/vip-install.sh | 
+        kubeVip=${[kube-vip]}
+        kubeVipIface=${[kube-vip-iface]} bash -
+      - rm -rf /root/net
+      # create kubernetes resource kubevirt ,cdi and vhost
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/kubevirt-operator.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/kubevirt-cr.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/cdi-operator.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/cdi-cr.yaml
