@@ -1,0 +1,114 @@
+# ssh-engine
+
+通过编辑Yaml配置文件即可实现多个节点的shell命令的编排执行,只需要ssh服务开启即可,不需要安装任何agent
+### Feature
+
+1. 可以添加自定义变量, 在yaml中使用${[]}引用
+  
+2. 异步执行
+  
+3. 可编排: 其他命令的执行可以作为前置条件
+  
+
+### Temp example
+
+```yaml
+LogFilePath: log
+CustomConfigParams:
+  # 	admin host ip
+  AdminHost: autodeploy.admin.internal
+  AdminHostIp: 172.26.0.3
+  PodCidr: 192.168.77.0/24
+  Iface: eth2
+  VlanNic: eth2
+  PodGateway: 192.168.77.1
+  Dns: 114.114.114.114
+  ComputationalClusterFirstMasterHostIp: 192.168.77.177
+  kube-vip-iface: eth1
+  kube-vip: 172.27.0.5
+
+# execution node
+Nodes:
+  - HostIp: 172.26.0.2
+    SSHUsername: root
+    SSHPassword:
+    SSHPort: 22
+    # node label
+    Label:
+      NodeNum: 0
+      PrivateIp: 172.27.0.2/24
+      PublicIp: 192.168.77.177/24
+  - HostIp: 172.26.0.3
+    SSHUsername: root
+    SSHPassword:
+    SSHPort: 22
+    Label:
+      NodeNum: 1
+      PrivateIp: 172.27.0.3/24
+      PublicIp: 192.168.77.188/24
+  - HostIp: 172.26.0.4
+    SSHUsername: root
+    SSHPassword:
+    SSHPort: 22
+    Label:
+      NodeNum: 2
+      PrivateIp: 172.27.0.4/24
+      PublicIp: 192.168.77.199/24
+
+#   the operator ${[]} will be replaced, it is first obtained from the environment variable, then from the Nodes.Label,
+#   again from the Nodes Attributes(HostIp, SSHUsername, SSHPassword, SSHPort...), and finally from the CustomConfigParams
+#   if the value is not found, panic will occur. code: pkg/ssh-engine/ssh.go:64
+ShellCommandTempConfig:
+  - TempName: CommonProcess
+    Description: set hostname, hosts
+    TryCount: 1
+    IsAsync: false
+    #	support variable: AllNode, Manual
+    ProcessingType: AllNode
+    cmds:
+      - "hostnamectl set-hostname 'node-${[NodeNum]}'"
+
+  - TempName: FirstRke2MasterNodeProcess
+    Description: install rke2 on first master node
+    TryCount: 1
+    IsAsync: false
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIps: [ "172.26.0.2" ]
+    #   wait for temp CommonProcess to finish
+    ConditionOn: CommonProcess
+    cmds:
+      #  download rke2 required file
+      - wget -q -P /root/rke2 --cut-dirs=3 -r -np -nH -R index.html ${[AdminHost]}:8000/computation_cluster/rke2/
+      - chmod +x /root/rke2/rke2.sh && INSTALL_RKE2_ARTIFACT_PATH=/root/rke2 /root/rke2/rke2.sh
+      #  copy and process rke2 config file
+      - mkdir -p /etc/rancher/rke2/ && cp /root/rke2/*.yaml /etc/rancher/rke2/
+      #  start rke2 service
+      - systemctl enable rke2-server.service && systemctl start rke2-server.service
+      - while ! [[ -x /var/lib/rancher/rke2/bin/kubectl ]]; do date; sleep 1;done;cp /var/lib/rancher/rke2/bin/kubectl /usr/local/bin
+      - rm -rf /root/rke2
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/cni/kube-flannel.yml
+
+  - TempName: NonFirstRke2MasterNodeProcess
+    Description: install rke2 on non-first nodes
+    TryCount: 1
+    IsAsync: true
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIps: [ "172.26.0.3","172.26.0.4" ]
+    cmds:
+      #  download rke2 required file
+      - wget -q -P /root/rke2 --cut-dirs=3 -r -np -nH -R index.html ${[AdminHost]}:8000/computation_cluster/rke2/
+      - chmod +x /root/rke2/rke2.sh && INSTALL_RKE2_ARTIFACT_PATH=/root/rke2 /root/rke2/rke2.sh
+      #  copy and process rke2 config file
+      - mkdir -p /etc/rancher/rke2/ && cp /root/rke2/*.yaml /etc/rancher/rke2/
+      #  [[]] can not be resolved by yaml, so use "" surrounded the command
+      - "if [[ ${[ComputationalClusterFirstMasterHostIp]} != ${[HostIp]} ]]; then sed -i '1i server: https://${[ComputationalClusterFirstMasterHostIp]}:9345' /etc/rancher/rke2/config.yaml;fi"
+      #  start rke2 service
+      - systemctl enable rke2-server.service && systemctl start rke2-server.service
+      - while ! [[ -x /var/lib/rancher/rke2/bin/kubectl ]]; do date; sleep 1;done;cp /var/lib/rancher/rke2/bin/kubectl /usr/local/bin
+      - rm -rf /root/rke2
+
+```
