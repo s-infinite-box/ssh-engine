@@ -35,21 +35,23 @@ type ShellCommandTemp struct {
 }
 
 // ExecShellCmds exec shell commands
-func (sc *ShellCommandTemp) exec(n *Node, c *ShellCmdsEngineTemp) (rlt string, err error) {
-	realCmds, err := sc.ReplaceCommandVariable(n, c)
+func (sc *ShellCommandTemp) exec(n *Node, e *Engine) (err error) {
+	realCmds, err := sc.ReplaceCommandVariable(n, e)
 	if err != nil {
-		return "", err
+		return err
+	}
+	err = sc.buildTempLogWrite(n, e)
+	if err != nil {
+		return err
 	}
 	for _, cmd := range realCmds {
 		for i := 0; i < sc.TryCount; i++ {
+			klog.Infof("### %s execute [[ %s ]]", n.HostIp, cmd)
 			cmdRlt, err := n.Dialer.ExecuteCommands(cmd)
-			cmdRlt = "### " + n.HostIp + " execute [[ " + cmd + " ]] result :\n" + cmdRlt + "\n"
-			rlt += cmdRlt
-			n.ProcessedCmdsUpdateLock.Lock()
-			n.ProcessedCmds = append(n.ProcessedCmds, cmd)
-			n.ProcessedCmdsRlt = append(n.ProcessedCmdsRlt, cmdRlt)
-			n.LogFileWriter.Write([]byte(cmdRlt))
-			n.ProcessedCmdsUpdateLock.Unlock()
+			cmdRlt = "### " + n.HostIp + " execute [[ " + cmd + " ]]" + "result :\n" + cmdRlt + "\n"
+			e.LogWriteLock.Lock()
+			n.TempLogFileWriter[sc.TempName].Write([]byte(cmdRlt))
+			e.LogWriteLock.Unlock()
 			if err != nil {
 				klog.Errorf("%v", err)
 				continue
@@ -60,8 +62,31 @@ func (sc *ShellCommandTemp) exec(n *Node, c *ShellCmdsEngineTemp) (rlt string, e
 	return
 }
 
+func (sc *ShellCommandTemp) buildTempLogWrite(n *Node, e *Engine) (err error) {
+	n.TempLogFileWriter[sc.TempName] = n.NodeLogFileWriter
+	if e.LogScope == "ALL" || e.LogScope == "TEMP" {
+		err = os.Mkdir(e.LogFilePath+"/"+n.HostIp, os.ModePerm)
+		if err != nil && !os.IsExist(err) {
+			klog.Error(err)
+			return err
+		}
+		f, err := os.OpenFile(e.LogFilePath+"/"+n.HostIp+"/"+strconv.Itoa(len(n.TempLogFileWriter))+"-"+sc.TempName+".log", e.LogFileAttr, os.ModePerm)
+		if err != nil {
+			klog.Error(err)
+			return err
+		}
+		if n.TempLogFileWriter[sc.TempName] == nil {
+			n.TempLogFileWriter[sc.TempName] = f
+		} else {
+			n.TempLogFileWriter[sc.TempName] = io.MultiWriter(n.TempLogFileWriter[sc.TempName], f)
+		}
+	}
+	n.TempLogFileWriter[sc.TempName] = io.MultiWriter(n.TempLogFileWriter[sc.TempName], os.Stdout)
+	return nil
+}
+
 // ReplaceCommandVariable replace variable in command
-func (sc *ShellCommandTemp) ReplaceCommandVariable(n *Node, e *ShellCmdsEngineTemp) (realCmds []string, err error) {
+func (sc *ShellCommandTemp) ReplaceCommandVariable(n *Node, e *Engine) (realCmds []string, err error) {
 	realCmds = make([]string, len(sc.Cmds))
 	copy(realCmds, sc.Cmds)
 	for i, cmd := range realCmds {
@@ -99,16 +124,14 @@ func (sc *ShellCommandTemp) ReplaceCommandVariable(n *Node, e *ShellCmdsEngineTe
 }
 
 type Node struct {
-	HostIp                  string            `json:"HostIp"`
-	SSHUsername             string            `json:"SSHUsername"`
-	SSHPassword             string            `json:"SSHPassword"`
-	SSHPort                 int               `json:"SSHPort"`
-	Dialer                  *SSHDialer        `json:"-"`
-	ProcessedCmds           []string          `json:"-"`
-	ProcessedCmdsRlt        []string          `json:"-"`
-	ProcessedCmdsUpdateLock sync.Mutex        `json:"-"`
-	Label                   map[string]string `json:"Label"`
-	LogFileWriter           io.Writer         `json:"-"`
+	HostIp            string               `json:"HostIp"`
+	SSHUsername       string               `json:"SSHUsername"`
+	SSHPassword       string               `json:"SSHPassword"`
+	SSHPort           int                  `json:"SSHPort"`
+	Dialer            *SSHDialer           `json:"-"`
+	Label             map[string]string    `json:"Label"`
+	NodeLogFileWriter io.Writer            `json:"-"`
+	TempLogFileWriter map[string]io.Writer `json:"-"`
 }
 
 var defaultBackoff = wait.Backoff{
