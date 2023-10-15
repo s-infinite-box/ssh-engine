@@ -62,10 +62,12 @@ type Engine struct {
 	TotalLogFileWriter io.Writer                         `json:"-"`
 	LogWriteLock       sync.Mutex                        `json:"-"`
 
-	CustomConfigParams map[string]string `json:"CustomConfigParams"`
-	LogFilePath        string            `json:"LogFilePath"`
-	LogScope           string            `json:"LogScope"`
+	//	engine config
+	LogFilePath string `json:"LogFilePath"`
+	LogScope    string `json:"LogScope"`
 
+	CustomConfigParams map[string]string `json:"CustomConfigParams"`
+	//	exec node
 	Nodes []*Node `json:"Nodes"`
 	//	shell-command
 	ShellCommandTempConfig []*ShellCommandTemp `json:"ShellCommandTempConfig"`
