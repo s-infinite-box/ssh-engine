@@ -32,6 +32,7 @@ type ShellCommandTemp struct {
 	//	support variable: AllNode, Manual
 	ProcessingType    string   `json:"ProcessingType"`
 	ProcessingNodeIps []string `json:"ProcessingNodeIps"`
+	ProcessingNodeIds []string `json:"ProcessingNodeIds"`
 }
 
 // ExecShellCmds exec shell commands
@@ -124,6 +125,7 @@ func (sc *ShellCommandTemp) ReplaceCommandVariable(n *Node, e *Engine) (realCmds
 }
 
 type Node struct {
+	Id                string               `json:"Id"`
 	HostIp            string               `json:"HostIp"`
 	SSHUsername       string               `json:"SSHUsername"`
 	SSHPassword       string               `json:"SSHPassword"`

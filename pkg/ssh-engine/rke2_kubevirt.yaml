@@ -1,0 +1,172 @@
+#   log file path
+#   example: log/node-hostIp/tempName.log
+LogFilePath: log
+#   support variable: TEMP, NODE, ONE, ALL(default), upper and lower case are supported
+#   TEMP: the log file will group according to the node and temp
+#   NODE: the log file will group according to the node
+#   ONE: the log file will be one file
+#   ALL: all of other
+LogScope: ONE
+
+CustomConfigParams:
+  # 	admin host ip
+  AdminHost: pphome-0
+  AdminHostIp: 192.168.61.66
+  PodCidr: 192.168.62.0/24
+  Iface: eth2
+  VlanNic: eth2
+  VLAN_ID: 0
+  PodGateway: 192.168.62.1
+  Dns: 114.114.114.114
+  ComputationalClusterFirstMasterHostIp: 192.168.61.66
+  kube-vip-iface: eth1
+  kube-vip: 192.168.61.67
+  host_0: 192.168.61.66 pphome-0
+  host_1: 192.168.61.77 pphome-1
+  host_2: 192.168.61.88 pphome-2
+
+# execution node
+Nodes:
+  - HostIp: 192.168.61.66
+    SSHUsername: root
+    SSHPassword:
+    SSHPort: 22
+    # node label
+    Label:
+      NodeNum: 0
+      PrivateIp: 196.168.62.66/24
+      PublicIp: 192.168.63.66/24
+      HostName: pphome-0
+  - HostIp: 192.168.61.77
+    SSHUsername: root
+    SSHPassword:
+    SSHPort: 22
+    Label:
+      NodeNum: 1
+      PrivateIp: 196.168.62.77/24
+      PublicIp: 192.168.63.77/24
+      HostName: pphome-1
+  - HostIp: 192.168.61.88
+    SSHUsername: root
+    SSHPassword:
+    SSHPort: 22
+    Label:
+      NodeNum: 2
+      PrivateIp: 196.168.62.88/24
+      PublicIp: 192.168.63.88/24
+      HostName: pphome-2
+
+#   the operator ${[]} will be replaced, it is first obtained from the environment variable, then from the Nodes.Label,
+#   again from the Nodes Attributes(HostIp, SSHUsername, SSHPassword, SSHPort...), and finally from the CustomConfigParams
+#   if the value is not found, panic will occur. code: pkg/ssh-engine/ssh.go:64
+ShellCommandTempConfig:
+
+  - TempName: InitBaseNode
+    Description: deploy registry and net filesystem
+    TryCount: 1
+    IsAsync: false
+    #	support variable: AllNode, Manual
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIps: [ "192.168.61.66" ]
+    cmds:
+      - ln -s /root/p/projects/stack/rke2_online /rke2_online
+      - cp /rke2_online/admin/registry.service /etc/systemd/system/
+      - cp /rke2_online/admin/file_server.service /etc/systemd/system/
+      - systemctl daemon-reload
+      - cp /rke2_online/admin/registry /usr/local/bin/
+      - systemctl enable registry
+      - systemctl start registry
+      - systemctl enable file_server
+      - systemctl start file_server
+
+  - TempName: CommonProcess
+    Description: set hostname, hosts
+    TryCount: 1
+    IsAsync: false
+    #	support variable: AllNode, Manual
+    ProcessingType: AllNode
+    cmds:
+      - "hostnamectl set-hostname '${[HostName]}'"
+#      - "sed -i '1i ${[AdminHostIp]} ${[AdminHost]}' /etc/hosts"
+      - "sed -i '1i ${[host_0]}' /etc/hosts"
+      - "sed -i '1i ${[host_1]}' /etc/hosts"
+      - "sed -i '1i ${[host_2]}' /etc/hosts"
+
+  - TempName: FirstRke2MasterNodeProcess
+    Description: install rke2 on first master node
+    TryCount: 1
+    IsAsync: false
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIps: [ "192.168.61.66" ]
+    #   wait for temp CommonProcess to finish
+    ConditionOn:
+      - CommonProcess
+    cmds:
+      #  download rke2 required file
+      - wget -q -P /root/rke2 --cut-dirs=3 -r -np -nH -R index.html ${[AdminHost]}:8000/computation_cluster/rke2/
+      - chmod +x /root/rke2/rke2.sh && INSTALL_RKE2_ARTIFACT_PATH=/root/rke2 /root/rke2/rke2.sh
+      #  copy and process rke2 config file
+      - mkdir -p /etc/rancher/rke2/ && cp /root/rke2/*.yaml /etc/rancher/rke2/
+      #  start rke2 service
+      - systemctl enable rke2-server.service && systemctl start rke2-server.service
+      - while ! [[ -x /var/lib/rancher/rke2/bin/kubectl ]]; do date; sleep 1;done;cp /var/lib/rancher/rke2/bin/kubectl /usr/local/bin
+      - rm -rf /root/rke2
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/cni/kube-flannel.yml
+
+  - TempName: NonFirstRke2MasterNodeProcess
+    Description: install rke2 on non-first nodes
+    TryCount: 1
+    IsAsync: true
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIps: [ "192.168.61.77","192.168.61.88" ]
+    cmds:
+      #  download rke2 required file
+      - wget -q -P /root/rke2 --cut-dirs=3 -r -np -nH -R index.html ${[AdminHost]}:8000/computation_cluster/rke2/
+      - chmod +x /root/rke2/rke2.sh && INSTALL_RKE2_ARTIFACT_PATH=/root/rke2 /root/rke2/rke2.sh
+      #  copy and process rke2 config file
+      - mkdir -p /etc/rancher/rke2/ && cp /root/rke2/*.yaml /etc/rancher/rke2/
+      #  [[]] can not be resolved by yaml, so use "" surrounded the command
+      - "if [[ ${[ComputationalClusterFirstMasterHostIp]} != ${[HostIp]} ]]; then sed -i '1i server: https://${[ComputationalClusterFirstMasterHostIp]}:9345' /etc/rancher/rke2/config.yaml;fi"
+      #  start rke2 service
+      - systemctl enable rke2-server.service && systemctl start rke2-server.service
+      - while ! [[ -x /var/lib/rancher/rke2/bin/kubectl ]]; do date; sleep 1;done;cp /var/lib/rancher/rke2/bin/kubectl /usr/local/bin
+      - rm -rf /root/rke2
+
+  - TempName: CniProcessAndInstallKubeModules
+    Description: install cni plug-in on first master node
+    TryCount: 1
+    IsAsync: true
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIps: [ "192.168.61.66" ]
+    cmds:
+      #  create kubernetes resource multus
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/cni/multus.yaml
+      #  create kubernetes resource kube-ovn
+      - >-
+        mkdir "/root/net" && cd /root/net && curl -sfL ${[AdminHost]}:8000/computation_cluster/cni/ovn-install.sh |
+        IFACE=${[Iface]}
+        VLAN_ID=${[VLAN_ID]}
+        POD_CIDR=${[PodCidr]}
+        POD_GATEWAY=${[PodGateway]}
+        VLAN_NIC=${[VlanNic]} bash -
+      # create default network
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/cni/multus-ovn-global.yaml
+      # create kubernetes resource kube-vip
+      - >-
+        cd /root/net && curl -sfL ${[AdminHost]}:8000/computation_cluster/cni/vip-install.sh | 
+        kubeVip=${[kube-vip]}
+        kubeVipIface=${[kube-vip-iface]} bash -
+      - rm -rf /root/net
+      # create kubernetes resource kubevirt ,cdi and vhost
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/kubevirt-operator.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/kubevirt-cr.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/cdi-operator.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/cdi-cr.yaml

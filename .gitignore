@@ -15,3 +15,5 @@
 *.log
 *.gitlab-ci.yml
 */out/*
+bin/
+vendor/*

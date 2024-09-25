@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 func Control(configPath string) error {
@@ -74,11 +75,11 @@ type Engine struct {
 }
 
 // BuildEngineTemp build Engine by yaml file
-// the method only processing config, not
+// the method only processing config
 func BuildEngineTemp(configPath string) (*Engine, error) {
 	RealConfigPath := configPath
 	if RealConfigPath == "" {
-		RealConfigPath = os.Getenv("Engine_CONFIG_PATH")
+		RealConfigPath = os.Getenv("ENGINE_CONFIG_PATH")
 	}
 	if RealConfigPath == "" {
 		RealConfigPath = ConfigPath
@@ -100,7 +101,7 @@ func BuildEngineTemp(configPath string) (*Engine, error) {
 
 	//	init log file path
 	if engineTemp.LogFilePath == "" {
-		engineTemp.LogFilePath = LogFilePath
+		engineTemp.LogFilePath = LogFilePath + "_" + time.Now().Format("2006-01-02-15-04-05")
 	}
 
 	//	init log scope
@@ -201,25 +202,38 @@ func (engineTemp *Engine) ExecShellCmds() {
 			}
 		}
 		ProcessNode := make([]*Node, 0)
+		//	select node by ProcessingType
 		switch sct.ProcessingType {
 		case "AllNode":
 			ProcessNode = engineTemp.Nodes
 		case "Manual":
-			for _, ip := range sct.ProcessingNodeIps {
-				for _, node := range engineTemp.Nodes {
-					if node.HostIp == strings.ReplaceAll(ip, " ", "") {
-						ProcessNode = append(ProcessNode, node)
+			if len(sct.ProcessingNodeIps) > 0 {
+				for _, ip := range sct.ProcessingNodeIps {
+					for _, node := range engineTemp.Nodes {
+						if node.HostIp == strings.ReplaceAll(ip, " ", "") {
+							ProcessNode = append(ProcessNode, node)
+						}
 					}
 				}
+			} else if len(sct.ProcessingNodeIds) > 0 {
+				for _, id := range sct.ProcessingNodeIds {
+					for _, node := range engineTemp.Nodes {
+						if node.Id == strings.ReplaceAll(id, " ", "") {
+							ProcessNode = append(ProcessNode, node)
+						}
+					}
+				}
+			} else {
+				panic("ProcessingType is Manual and It is empty what ProcessingNodeIps and ProcessingNodeIds ")
 			}
-			if len(sct.ProcessingNodeIps) != len(ProcessNode) {
+			if len(sct.ProcessingNodeIps) != len(ProcessNode) && len(sct.ProcessingNodeIds) != len(ProcessNode) {
 				klog.Warningf("The number of IPs in ProcessingNodeIps is not equal to the number of nodes")
 			}
 		default:
 			klog.Errorf("Unsupported ProcessingType: %s", sct.ProcessingType)
 			panic("Unsupported ProcessingType")
 		}
-		klog.Infof("ProcessingType: %s, ProcessingNodeIps: %v, Async: %t ,Cmds: %v", sct.ProcessingType, sct.ProcessingNodeIps, sct.IsAsync, strings.Join(sct.Cmds, "\n"))
+		//klog.Infof("ProcessingType: %s, ProcessingNodeIps: %v, Async: %t ,Cmds: %v", sct.ProcessingType, sct.ProcessingNodeIps, sct.IsAsync, strings.Join(sct.Cmds, "\n"))
 		for _, node := range ProcessNode {
 			//	Async exec
 			if sct.IsAsync {

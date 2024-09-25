@@ -1,0 +1,323 @@
+#   log file path
+#   example: log/node-hostIp/tempName.log
+LogFilePath: log
+#   support variable: TEMP, NODE, ONE, ALL(default), upper and lower case are supported
+#   TEMP: the log file will group according to the node and temp
+#   NODE: the log file will group according to the node
+#   ONE: the log file will be one file
+#   ALL: all of other
+LogScope: TEMP
+
+CustomConfigParams:
+  # 	admin host ip
+  AdminHost: autodeploy.admin.internal
+  AdminHostIp: 192.168.61.66
+  VLAN_ID: 0
+  PodCidr: 192.168.63.0/24
+  Iface: eth3
+  VlanNic: eth3
+  PodGateway: 192.168.63.1
+  Dns: 233.5.5.5
+  ComputationalClusterFirstMasterHostIp: 192.168.61.66
+  kube-vip-iface: eth1
+  kube-vip: 192.168.61.67
+
+  # 	scale-io common
+  VirtualIpInterface: eth2
+  VirtualIp: 192.168.62.67
+  StoragePoolName: ssd01
+  MediaType: SSD
+  # 与执行节点对应
+  MdmMasterHostIp: "192.168.61.66"
+  MdmMasterPrivateIp: "192.168.62.66"
+  MdmMasterDeviceName: "/dev/sda"
+  MdmStandbyHostIp: "192.168.61.77"
+  MdmStandbyPrivateIp: "192.168.62.77"
+  MdmStandbyDeviceName: "/dev/sda"
+  TieBreakerHostIp: "192.168.61.88"
+  TieBreakerPrivateIp: "192.168.62.88"
+  TieBreakerDeviceName: "/dev/sdb"
+  MdmPassword: "pphome@123"
+  GatewayEndpoint: "https://scale-io-gateway"
+  host_0: 192.168.61.66 pphome-0
+  host_1: 192.168.61.77 pphome-1
+  host_2: 192.168.61.88 pphome-2
+
+Nodes:
+  - id: 0
+    HostIp: 192.168.61.66
+    SSHUsername: root
+    SSHPassword:
+    SSHPort: 22
+    Label:
+      NodeNum: 0
+      PrivateIp: 192.168.62.66/24
+      PublicIp: 192.168.63.66/24
+      HostName: pphome-0
+
+  - id: 1
+    HostIp: 192.168.61.77
+    SSHUsername: root
+    SSHPassword:
+    SSHPort: 22
+    Label:
+      NodeNum: 1
+      PrivateIp: 192.168.62.77/24
+      PublicIp: 192.168.63.77/24
+      HostName: pphome-1
+
+  - id: 2
+    HostIp: 192.168.61.88
+    SSHUsername: root
+    SSHPassword:
+    SSHPort: 22
+    Label:
+      NodeNum: 2
+      PrivateIp: 192.168.62.88/24
+      PublicIp: 192.168.63.88/24
+      HostName: pphome-2
+
+ShellCommandTempConfig:
+
+  - TempName: InitBaseNode
+    Description: deploy registry and net filesystem
+    TryCount: 1
+    IsAsync: false
+    #	support variable: AllNode, Manual
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIds: [ 0 ]
+    cmds:
+      - ln -s /root/p/projects/stack/rke2_online /rke2_online
+      - cp /rke2_online/admin/registry.service /etc/systemd/system/
+      - cp /rke2_online/admin/file_server.service /etc/systemd/system/
+      - systemctl daemon-reload
+      - cp /rke2_online/admin/registry /usr/local/bin/
+      - systemctl enable registry
+      - systemctl start registry
+      - systemctl enable file_server
+      - systemctl start file_server
+
+  - TempName: CommonProcess
+    Description: set hostname, hosts
+    TryCount: 1
+    IsAsync: false
+    ProcessingType: AllNode
+    cmds:
+      - "hostnamectl set-hostname '${[HostName]}'"
+      - "sed -i '1i ################# pphome #################' /etc/hosts"
+      - "sed -i '1i ${[AdminHostIp]} ${[AdminHost]}' /etc/hosts"
+      - "sed -i '1i ${[host_0]}' /etc/hosts"
+      - "sed -i '1i ${[host_1]}' /etc/hosts"
+      - "sed -i '1i ${[host_2]}' /etc/hosts"
+      - "sed -i '1i ################# pphome #################' /etc/hosts"
+#      - >-
+#        curl -sfL ${[AdminHost]}:8000/computation_cluster/cni/netplan.sh |
+#        PrivateIp=${[PrivateIp]}
+#        PublicIp=${[PublicIp]}
+#        PodGateway=${[PodGateway]}
+#        Dns=${[Dns]}
+#        bash -
+
+  - TempName: InstallPack
+    Description: install scale-io required file and cni binary file
+    TryCount: 1
+    IsAsync: true
+    ProcessingType: AllNode
+    cmds:
+      - echo "deb http://security.ubuntu.com/ubuntu xenial-security main" >>/etc/apt/sources.list
+      - apt update && apt install -y libncurses5 libtinfo5 libssl1.0.0
+      - wget -q -P /root/scaleio --cut-dirs=3 -r -np -nH -R index.html ${[AdminHost]}:8000/computation_cluster/scaleio/
+      - DEBIAN_FRONTEND=noninteractive I_AM_SURE=1 dpkg -i /root/scaleio/emc-scaleio-mdm_3.0-0.769.Ubuntu.20.04_amd64.deb && echo mdm install success MDM_ROLE_IS_MANAGER:${MDM_ROLE_IS_MANAGER}
+      - "if [[ ${[HostIp]} = ${[TieBreakerHostIp]} ]]; then MDM_ROLE_IS_MANAGER=0;else MDM_ROLE_IS_MANAGER=1; fi;echo actor_role_is_manager=${MDM_ROLE_IS_MANAGER} >> /opt/emc/scaleio/mdm/cfg/conf.txt && systemctl restart mdm"
+      - DEBIAN_FRONTEND=noninteractive dpkg -i /root/scaleio/emc-scaleio-sds_3.0-0.769.Ubuntu.20.04_amd64.deb && echo 'sds install success'
+      - DEBIAN_FRONTEND=noninteractive MDM_IP=${[VirtualIp]} dpkg -i /root/scaleio/EMC-ScaleIO-sdc-3.6-200.105.Ubuntu.20.04.2.x86_64.deb && echo 'sdc install success'
+      - mkdir -p /bin/emc/scaleio/scini_sync/driver_cache/Ubuntu/3.6.200.105/$(uname -r)
+      - cp /root/scaleio/scini.ko /bin/emc/scaleio/scini_sync/driver_cache/Ubuntu/3.6.200.105/$(uname -r)/
+      - systemctl restart scini.service
+      #  download cni binary file
+      - wget -q -P /opt/cni/bin --cut-dirs=3 -r -np -nH -R index.html ${[AdminHost]}:8000/computation_cluster/cni/bin && chmod +x /opt/cni/bin/*
+      # nfs
+      - modprobe nfs && modprobe nfsd && echo 'nfs' > /etc/modules-load.d/nfs.conf && echo 'nfsd' >> /etc/modules-load.d/nfsd.conf
+
+
+  - TempName: FirstRke2MasterNodeProcess
+    Description: install rke2 on first master node
+    TryCount: 1
+    IsAsync: false
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIds: [ 0 ]
+    cmds:
+      #  download rke2 required file
+      - wget -q -P /root/rke2 --cut-dirs=3 -r -np -nH -R index.html ${[AdminHost]}:8000/computation_cluster/rke2/
+      - chmod +x /root/rke2/rke2.sh && INSTALL_RKE2_ARTIFACT_PATH=/root/rke2 /root/rke2/rke2.sh
+      #  copy and process rke2 config file
+      - mkdir -p /etc/rancher/rke2/ && cp /root/rke2/*.yaml /etc/rancher/rke2/
+      - sed -i '/tls-san:/a \ \ - ${[kube-vip]}' /etc/rancher/rke2/config.yaml
+      #  start rke2 service
+      - systemctl enable rke2-server.service && systemctl start rke2-server.service
+      - while ! [[ -x /var/lib/rancher/rke2/bin/kubectl ]]; do date; sleep 1;done;cp /var/lib/rancher/rke2/bin/kubectl /usr/local/bin
+      - rm -rf /root/rke2
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/cni/kube-flannel.yml
+      - curl -X POST -H --silent --data-urlencode kubeConf=$(cat  /root/.kube/config) ${[AdminHost]}:32109/api/v1/InstallComputationalCluster
+
+  - TempName: NonFirstRke2MasterNodeProcess
+    Description: install rke2 on non-first nodes
+    TryCount: 1
+    IsAsync: true
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIds: [ 1, 2 ]
+    cmds:
+      #  download rke2 required file
+      - wget -q -P /root/rke2 --cut-dirs=3 -r -np -nH -R index.html ${[AdminHost]}:8000/computation_cluster/rke2/
+      - chmod +x /root/rke2/rke2.sh && INSTALL_RKE2_ARTIFACT_PATH=/root/rke2 /root/rke2/rke2.sh
+      #  copy and process rke2 config file
+      - mkdir -p /etc/rancher/rke2/ && cp /root/rke2/*.yaml /etc/rancher/rke2/
+      #  [[]] can not be resolved by yaml, so use "" surrounded the command
+      - "if [[ ${[ComputationalClusterFirstMasterHostIp]} != ${[HostIp]} ]]; then sed -i '1i server: https://${[ComputationalClusterFirstMasterHostIp]}:9345' /etc/rancher/rke2/config.yaml;fi"
+      - sed -i '/tls-san:/a \ \ - ${[kube-vip]}' /etc/rancher/rke2/config.yaml
+      #  start rke2 service
+      - systemctl enable rke2-server.service && systemctl start rke2-server.service
+      - while ! [[ -x /var/lib/rancher/rke2/bin/kubectl ]]; do date; sleep 1;done;cp /var/lib/rancher/rke2/bin/kubectl /usr/local/bin
+      - rm -rf /root/rke2
+
+  - TempName: CniProcessAndInstallKubeModules
+    Description: install cni plug-in on first master node
+    TryCount: 1
+    IsAsync: true
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIds: [ 0 ]
+    ConditionOn:
+      - InitMdmCluster
+    cmds:
+      #  create kubernetes resource multus
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/cni/multus.yaml
+      #  create kubernetes resource kube-ovn
+      - >-
+        mkdir "/root/net" && cd /root/net && curl -sfL ${[AdminHost]}:8000/computation_cluster/cni/ovn-install.sh |
+        IFACE=${[Iface]}
+        VLAN_ID=${[VLAN_ID]}
+        POD_CIDR=${[PodCidr]}
+        POD_GATEWAY=${[PodGateway]}
+        VLAN_NIC=${[VlanNic]} bash -
+      # create kubernetes resource kube-vip
+      - >-
+        cd /root/net && curl -sfL ${[AdminHost]}:8000/computation_cluster/cni/vip-install.sh | 
+        kubeVip=${[kube-vip]}
+        kubeVipIface=${[kube-vip-iface]} bash -
+      # create default network
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/cni/multus-ovn-global.yaml
+      - rm -rf /root/net
+      # create kubernetes resource kubevirt ,cdi and vhost
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/kubevirt-operator.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/kubevirt-cr.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/cdi-operator.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/kubevirt/cdi-cr.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/vhost/crd-vhostcluster.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/vhost/crd-vhostmgmt.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/vhost/vhost-api-deployment-produce.yaml
+      - kubectl apply -f http://${[AdminHost]}:8000/computation_cluster/vhost/vhost-proxy-deployment-produce.yaml
+
+  - TempName: InitMdmCluster
+    Description: create mdm cluster
+    TryCount: 1
+    IsAsync: false
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIds: [ 0 ]
+    #   this is executed after the CommandTemp that TempName is CommonProcess has been executed on the CommonProcess specified all nodes
+    #   ConditionOn can specify multiple TempName
+    ConditionOn:
+      - InstallPack
+    cmds:
+      # create scaleio mdm cluster
+      - >-
+        scli --create_mdm_cluster
+        --master_mdm_ip ${[MdmMasterHostIp]}
+        --master_mdm_management_ip ${[MdmMasterPrivateIp]}
+        --master_mdm_name mdm1
+        --cluster_virtual_ip ${[VirtualIp]}
+        --master_mdm_virtual_ip_interface ${[VirtualIpInterface]}
+        --approve_certificate
+        --accept_license
+        --use_nonsecure_communication
+        --mdm_ip ${[MdmMasterHostIp]}
+      - while [[ -z $(ss -l | grep :6611) ]]; do sleep 1;date;done;sleep 5
+      # set scaleio password
+      - scli --login --username admin --password admin --approve_certificate && scli --set_password --old_password admin --new_password ${[MdmPassword]} --approve_certificate
+      - scli --login --username admin --password ${[MdmPassword]} --approve_certificate
+      # add scaleio standby mdm and tiebreaker
+      - >-
+        scli --add_standby_mdm
+        --new_mdm_ip ${[MdmStandbyHostIp]}
+        --mdm_role manager
+        --new_mdm_management_ip ${[MdmStandbyPrivateIp]}
+        --new_mdm_virtual_ip_interface ${[VirtualIpInterface]}
+        --new_mdm_name mdm2 --approve_certificate
+      - >-
+        scli --add_standby_mdm
+        --mdm_role tb
+        --new_mdm_ip ${[TieBreakerHostIp]}
+        --new_mdm_management_ip ${[TieBreakerPrivateIp]}
+        --new_mdm_name tb --approve_certificate
+      - >-
+        scli --switch_cluster_mode
+        --cluster_mode 3_node
+        --add_slave_mdm_name mdm2
+        --add_tb_name tb --approve_certificate
+      # create scaleio storage pool
+      - scli --add_protection_domain --protection_domain_name pd
+      - scli --add_storage_pool --protection_domain_name pd --storage_pool_name ${[StoragePoolName]} --media_type ${[MediaType]}
+      # create scaleio sds
+      - >-
+        scli --add_sds --sds_ip ${[MdmMasterHostIp]}
+        --device_path ${[MdmMasterDeviceName]}
+        --storage_pool_name ${[StoragePoolName]}
+        --protection_domain_name pd
+        --sds_name sds1 --force_device_takeover
+      - >-
+        scli --add_sds --sds_ip ${[MdmStandbyHostIp]}
+        --device_path ${[MdmStandbyDeviceName]}
+        --storage_pool_name ${[StoragePoolName]}
+        --protection_domain_name pd
+        --sds_name sds2 --force_device_takeover
+      - >-
+        scli --add_sds --sds_ip ${[TieBreakerHostIp]}
+        --device_path ${[TieBreakerDeviceName]}
+        --storage_pool_name ${[StoragePoolName]}
+        --protection_domain_name pd
+        --sds_name sds3 --force_device_takeover
+
+
+  - TempName: ScaleIOCsiProcess
+    Description: install csi
+    TryCount: 1
+    IsAsync: false
+    ProcessingType: Manual
+    #   Take effect when ProcessingType is Manual
+    #   the value should be an array of IP string
+    ProcessingNodeIds: [ 0 ]
+    ConditionOn:
+      - InitMdmCluster
+      - NonFirstRke2MasterNodeProcess
+    cmds:
+      # create scaleio-gateway, csi and storage class
+      - >-
+        mkdir "/root/csi" && cd /root/csi && curl -sfL ${[AdminHost]}:8000/computation_cluster/csi/vxflexos-install.sh | 
+        VirtualIp=${[VirtualIp]} 
+        SystemID=$(scli --login --username admin --password ${[MdmPassword]}  --approve_certificate| sed 's/Logged in. User role is SuperUser. System ID is //') 
+        Password=${[MdmPassword]} 
+        MDMs=${[MdmMasterHostIp]},${[MdmStandbyHostIp]},${[TieBreakerHostIp]}
+        StoragePool=${[StoragePoolName]}
+        AdminHost=${[AdminHost]}
+        GatewayEndpoint=${[GatewayEndpoint]}
+        bash -
+      - rm -rf /root/csi

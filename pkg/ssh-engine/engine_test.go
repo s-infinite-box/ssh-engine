@@ -7,7 +7,7 @@ import (
 )
 
 func TestInitCluster(t *testing.T) {
-	err := Control("")
+	err := Control("rke2_ovn_multus_kubevirt_scaleio.yaml")
 	if err != nil {
 		panic(err)
 	}
@@ -17,6 +17,7 @@ func Test1(t *testing.T) {
 	n := &Node{}
 	t.Log(n)
 }
+
 func Test2(t *testing.T) {
 	ch := make(chan string, 1)
 	arr := []string{"a", "b", "c"}
