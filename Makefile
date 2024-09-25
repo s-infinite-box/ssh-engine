@@ -4,13 +4,11 @@ GOCMD=go
 export GOARCH=amd64
 export GOOS=linux
 
-build: clean
-	$(GOCMD) build -o bin/ssh-engine -v cmd/ssh-engine/main.go
-
 clean:
 	rm -rf bin/*
 
-release: clean build
+release: clean
+	$(GOCMD) build -o bin/ssh-engine -v cmd/ssh-engine/main.go
 	@echo "release success"
 
 
